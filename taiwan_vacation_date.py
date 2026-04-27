@@ -1,3 +1,4 @@
+import os
 import urllib.request
 import json
 from datetime import datetime, timedelta
@@ -85,7 +86,43 @@ def taiwan_vacation_date(
         if day.get("isHoliday")
     }
 
-    # ── 3. Identify holiday blocks (連假) ──────────────────────
+    # ── 2.5 Load extension holidays from txt ───────────────────
+    ext_path = os.path.join(os.path.dirname(__file__), "extension_holiday.txt")
+    extension_dates = []
+    if os.path.exists(ext_path):
+        with open(ext_path, "r") as f:
+            for line in f:
+                date_str = line.strip()
+                if date_str:
+                    extension_dates.append(date_str)
+                    if date_str not in holiday_set:
+                        holiday_set.add(date_str)
+
+    # ── 2.6 Convert extension dates into holiday blocks ──────────
+    # Group consecutive dates into blocks (e.g. 20270101,20270102,20270103 → one block)
+    extension_blocks = []
+    if extension_dates:
+        # Sort extension dates
+        ext_sorted = sorted(extension_dates)
+        current_ext_block = []
+        for date_str in ext_sorted:
+            dt = datetime.strptime(date_str, "%Y%m%d")
+            if start_target <= dt <= end_target:
+                if current_ext_block:
+                    last_dt = current_ext_block[-1]
+                    if (dt - last_dt).days == 1:
+                        current_ext_block.append(dt)
+                    else:
+                        if len(current_ext_block) >= 2:
+                            extension_blocks.append(current_ext_block)
+                        current_ext_block = [dt]
+                else:
+                    current_ext_block = [dt]
+        # Trailing
+        if current_ext_block and len(current_ext_block) >= 2:
+            extension_blocks.append(current_ext_block)
+
+    # ── 3. Identify holiday blocks (連假) from calendar data ────
     blocks = []
     current_block = []
     has_desc = False
@@ -115,14 +152,30 @@ def taiwan_vacation_date(
         ):
             blocks.append(current_block)
 
-    # ── 4. Generate periods and calculate leave days ─────────
+    # ── 4. Merge calendar blocks and extension blocks ──────────
+    all_blocks = blocks + extension_blocks
+    # Merge overlapping or adjacent blocks
+    if len(all_blocks) > 1:
+        merged = []
+        all_blocks.sort(key=lambda b: b[0])
+        current = all_blocks[0]
+        for next_block in all_blocks[1:]:
+            if next_block[0] <= current[-1] + timedelta(days=1):
+                # Overlapping or adjacent → merge
+                current = current + [d for d in next_block if d not in current]
+            else:
+                merged.append(current)
+                current = next_block
+        merged.append(current)
+        all_blocks = merged
+
+    # ── 5. Generate periods and calculate leave days ─────────
     valid_periods = []
     seen = set()
 
-    for block in blocks:
+    for block in all_blocks:
         start_h = block[0]
         end_h = block[-1]
-
         for x in range(extension_day + 1):
             for y in range(extension_day + 1):
                 if x + y <= extension_day:
